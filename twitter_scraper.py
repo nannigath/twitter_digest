@@ -32,7 +32,7 @@ class TwitterScraper:
                 retries += 1
                 time.sleep(retry_delay)
         
-        raise TimeoutException("Failed to retrieve the first tweet after multiple attempts.")
+        return None
     
     def fetch_tweets_list(self, url, start_date, end_date, time_threshold_minutes=2):
         """
@@ -44,22 +44,25 @@ class TwitterScraper:
         self.driver.get(url)
         start_date_obj = datetime.strptime(start_date, "%Y-%m-%d")
         end_date_obj = datetime.strptime(end_date, "%Y-%m-%d")
-        
+        count = 0
+       
         tweets = []
         while True:
+           
             tweet_element = self._get_first_tweet()
             tweet_data = self._process_tweet(tweet_element)
-            
             if not tweet_data:
                 continue
             
             tweet_date = datetime.strptime(tweet_data["date"], "%Y-%m-%d")
             tweets.append(tweet_data)
-            
             if tweet_date < start_date_obj:
-                break
+                if not tweet_data['is_reposted']:
+                    break
             elif tweet_date > end_date_obj:
+                count+=1
                 self._delete_first_tweet()
+                
                 continue
             
             self._delete_first_tweet()
@@ -69,7 +72,7 @@ class TwitterScraper:
         if not df.empty:
             df["datetime"] = pd.to_datetime(df["date"] + " " + df["time"])
             df.sort_values(by=["author_name", "datetime"], inplace=True)
-            #finding threads based on time data
+            
             thread_numbers = []
             thread_count = 0
             
@@ -124,7 +127,7 @@ class TwitterScraper:
     
     def is_retweet(self, tweet_element):
         try:
-            return bool(tweet_element.find_elements(By.XPATH, ".//div[contains(text(), 'Retweeted')]"))
+            return bool('reposted' in tweet_element.find_element(By.XPATH,'.//span').text)
         except NoSuchElementException:
             return False
     
@@ -162,7 +165,7 @@ class TwitterScraper:
                 "lang": self.get_element_attribute(tweet_element, "div[data-testid='tweetText']", "lang"),
                 "tweet_url": self.get_tweet_url(tweet_element),
                 "mentioned_urls": self.get_mentioned_urls(tweet_element),
-                "is_retweet": self.is_retweet(tweet_element),
+                "is_reposted": self.is_retweet(tweet_element),
                 "media_type": self.get_media_type(tweet_element),
                 "image_urls": self.get_images_urls(tweet_element)
             }
