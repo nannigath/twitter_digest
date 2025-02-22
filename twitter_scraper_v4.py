@@ -417,8 +417,8 @@ def save_to_csv(df, output_dir="output", base_filename="tweets_week"):
 
 def main():
 
-    USERNAME = "aitrendspot"
-    PASSWORD = "Spotl!ght08"
+    USERNAME = "username"
+    PASSWORD = "password"
     
     driver_manager = WebDriverManager(USERNAME, PASSWORD, headless=False)
     driver_manager.initialize_driver()
