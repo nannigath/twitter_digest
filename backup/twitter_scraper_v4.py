@@ -1,12 +1,77 @@
-# twitter_scraper.py
+
 import os
 import time
+import requests
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
+from selenium import webdriver
+from urllib.parse import urlparse
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException, StaleElementReferenceException
-from utils import log
+
+def log(message):
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {message}")
+
+
+class WebDriverManager:
+    def __init__(self, username, password, headless=True):
+        self.username = username
+        self.password = password
+        self.headless = headless
+        self.driver = None
+
+    def initialize_driver(self):
+        options = webdriver.ChromeOptions()
+        options.add_argument("--no-sandbox")
+        options.add_argument('--disable-gpu')
+        options.add_argument("--window-size=1920, 1200")
+        options.add_argument('--disable-dev-shm-usage')
+        if self.headless:
+            options.add_argument("--headless")
+
+        self.driver = webdriver.Chrome(options=options)
+        self.driver.get("https://twitter.com/login")
+        self._login()
+        return self.driver
+
+    def _login(self):
+        try:
+            # Enter username
+            username_field = WebDriverWait(self.driver, 10).until(
+                EC.presence_of_element_located((By.NAME, "text"))
+            )
+            username_field.send_keys(self.username)
+            username_field.send_keys("\n")
+
+            # Enter password
+            password_field = WebDriverWait(self.driver, 10).until(
+                EC.presence_of_element_located((By.NAME, "password"))
+            )
+            password_field.send_keys(self.password)
+            password_field.send_keys("\n")
+
+            time.sleep(5)  # Wait for login
+
+        except Exception as e:
+            print(f"Login failed: {str(e)}")
+
+    def get_auth_token(self):
+        cookies = self.driver.get_cookies()
+        for cookie in cookies:
+            if cookie["name"] == "auth_token":
+                return cookie["value"]
+        return None
+
+    def restart_driver(self):
+        print("Restarting WebDriver...")
+        self.close()  # Close the existing session if it's active
+        self.initialize_driver()  # Reinitialize the driver
+
+    def close(self):
+        if self.driver:
+            self.driver.quit()
 
 
 class TwitterScraper:
@@ -316,3 +381,61 @@ class TwitterScraper:
                     print(f"Error message: {str(e)}")
     
         print("Image download completed.")
+
+
+def group_by_week(df, end_date):
+    log("Grouping data into 7-day intervals with thread grouping...")
+    end_date_dt = datetime.strptime(end_date, "%Y-%m-%d")
+    
+    # Ensure the 'date' column is in datetime format
+    if df["date"].dtype == 'O':  # if it's an object (likely string)
+        df["date"] = pd.to_datetime(df["date"])
+    
+    # Compute the earliest tweet date for each thread (using the existing 'date' column)
+    thread_min_dates = df.groupby("thread_number")["date"].min().reset_index().rename(columns={"date": "thread_min_date"})
+    
+    # Merge the thread's minimum date back into the DataFrame
+    df = df.merge(thread_min_dates, on="thread_number", how="left")
+    
+    # Assign a week group based on the thread's earliest tweet date
+    df["week_group"] = ((end_date_dt - df["thread_min_date"]).dt.days // 7) + 1
+    
+    # Sort by thread and date for consistency
+    df.sort_values(by=["thread_number", "date"], inplace=True)
+    return df
+
+def save_to_csv(df, output_dir="output", base_filename="tweets_week"): 
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+    
+    for week, group in df.groupby("week_group"):
+        filename = os.path.join(output_dir, f"{base_filename}_{week}.csv")
+        log(f"Saving week {week} data to {filename}...")
+        group.drop(columns=["week_group"], inplace=True)
+        group.to_csv(filename, index=False)
+        log(f"Week {week} file saved successfully.")
+
+def main():
+
+    USERNAME = "username"
+    PASSWORD = "password"
+    
+    driver_manager = WebDriverManager(USERNAME, PASSWORD, headless=False)
+    driver_manager.initialize_driver()
+    auth_token = driver_manager.get_auth_token()
+    
+    url = "https://x.com/i/lists/1866834968594317670"
+    end_date = "2025-02-20"
+    start_date = (datetime.strptime(end_date, "%Y-%m-%d") - timedelta(days=8)).strftime("%Y-%m-%d")
+    
+    scraper = TwitterScraper(driver_manager)
+    df = scraper.fetch_tweets_list(url, start_date, end_date)
+    
+    if not df.empty:
+        df = group_by_week(df, end_date)
+        save_to_csv(df)
+    else:
+        log("No data to save.")
+    
+if __name__ == "__main__":
+    main()
