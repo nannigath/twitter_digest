@@ -1,4 +1,3 @@
-# main.py
 import os
 from webdriver_manager import WebDriverManager
 from twitter_scraper import TwitterScraper
@@ -7,6 +6,8 @@ from summarizer import SummaryGenerator
 from utils import log, save_to_csv
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
+from email_sender import send_email
+from subscribers import SUBSCRIBERS  # Import SUBSCRIBERS from subscribers.py
 
 # Load environment variables
 load_dotenv()
@@ -19,7 +20,6 @@ def main():
     GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
     URL = "https://x.com/i/lists/1866834968594317670"
     OUTPUT_DIR = "output"
-    SUBSCRIBERS = ["subscriber1@example.com", "subscriber2@example.com"]
 
     required_vars = {
         "TWITTER_USERNAME": TWITTER_USERNAME,
@@ -65,9 +65,9 @@ def main():
     summaries = {}
 
     # Summarize with OpenAI
-    openai_summarizer = SummaryGenerator(model_type="openai", openai_api_key=OPENAI_API_KEY)
-    summary_openai = openai_summarizer.generate_summary(documents, prompt_template="v11")
-    summaries["Last Week (OpenAI)"] = summary_openai
+    # openai_summarizer = SummaryGenerator(model_type="openai", openai_api_key=OPENAI_API_KEY)
+    # summary_openai = openai_summarizer.generate_summary(documents, prompt_template="v11")
+    # summaries["Last Week (OpenAI)"] = summary_openai
 
     # Summarize with Gemini
     gemini_summarizer = SummaryGenerator(model_type="gemini", google_api_key=GOOGLE_API_KEY)
@@ -82,14 +82,13 @@ def main():
 
     # Step 4: Send Email to Subscribers
     log("Sending emails to subscribers...")
-    summaries = {summary_title: summary}  # Single summary as a dict
     for subscriber in SUBSCRIBERS:
         try:
             send_email(summaries, subscriber, START_DATE, END_DATE)
             log(f"Successfully sent email to {subscriber}")
         except Exception as e:
             log(f"Failed to send email to {subscriber}: {str(e)}")
-    log("Email sending placeholder executed (not implemented).")
+    log("Email sending completed.")
 
 if __name__ == "__main__":
     main()
