@@ -1,4 +1,3 @@
-# email_sender.py
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import smtplib
@@ -15,15 +14,13 @@ load_dotenv()
 # Configure logging for this module
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s: %(message)s")
 
-def send_email(summaries, subscriber, start_date, end_date):
+def send_email(summaries, subscriber):
     """
     Send an email with a single summary to a subscriber.
     
     Args:
-        summaries (dict): Dictionary with one title-summary pair.
+        summaries (dict): Dictionary with one key-summary pair, where summary contains the title.
         subscriber (str): Email address of the subscriber.
-        start_date (str): Start date of the data period (YYYY-MM-DD).
-        end_date (str): End date of the data period (YYYY-MM-DD).
     """
     # Load email credentials from environment variables
     EMAIL_SENDER = os.getenv("EMAIL_SENDER")
@@ -41,22 +38,43 @@ def send_email(summaries, subscriber, start_date, end_date):
     msg["From"] = EMAIL_SENDER
     msg["To"] = subscriber
 
-    # Plain text version (single summary)
-    title, summary = next(iter(summaries.items()))  # Get the only title-summary pair
-    text = f"{title}:\n{summary}\n\nTo unsubscribe, reply with 'unsubscribe'."
+    # Extract summary from the dictionary
+    _, summary = next(iter(summaries.items()))  # Key is not the title, so ignore it
+
+    # Normalize line endings and remove BOM
+    summary = summary.replace('\r\n', '\n').replace('\r', '\n').replace('\ufeff', '')
+    logging.info(f"Summary content: {repr(summary)}")  # Debug summary
+
+    # Extract the title from the first non-empty line
+    title = "Weekly AI Newsletter"  # Fallback
+    lines = summary.splitlines()
+    for i, line in enumerate(lines):
+        line = line.strip()
+        if line:  # Take the first non-empty line
+            title = line
+            # Remove the title line from the summary
+            summary = '\n'.join(lines[i+1:]).strip()
+            break
+    logging.info(f"Extracted raw title: {title}")
+    logging.info(f"Modified summary: {repr(summary)}")  # Debug modified summary
+
+    # Plain text version (use cleaned title for consistency)
+    email_title = re.sub(r'\*\*', '', title)  # Remove Markdown bold markers
+    email_title = email_title.replace('"', '')  # Remove quotes
+    email_title = email_title.strip()  # Trim whitespace
+    text = f"{email_title}:\n{summary}\n\nTo unsubscribe, reply with 'unsubscribe'."
 
     # Convert Markdown to HTML for the summary
     html_content = markdown.markdown(summary, extensions=['extra'])
+    logging.info(f"HTML content: {repr(html_content)}")  # Debug HTML
 
-    # Extract the title dynamically from the first bolded text in the content
-    title_match = re.search(r'<strong>(.*?)</strong>', html_content)
-    if title_match:
-        email_title = title_match.group(1).replace('"', '')  # Remove quotes from the title
-        html_content = re.sub(r'<p>.*?<strong>.*?</strong>.*?</p>', '', html_content, count=1)
-    else:
-        email_title = title  # Use the provided title as fallback
+    # Clean the title for HTML display, preserving emojis
+    logging.info(f"Cleaned email title: {email_title}")
 
-    # Enhanced HTML template with title background
+    # Remove the title from html_content if it remains
+    html_content = re.sub(rf'<p>\s*{re.escape(title)}\s*</p>', '', html_content, count=1, flags=re.DOTALL)
+
+    # Enhanced HTML template with consistent text colors
     html = f"""
     <!DOCTYPE html>
     <html lang="en">
@@ -90,8 +108,8 @@ def send_email(summaries, subscriber, start_date, end_date):
                 width: auto;
                 box-shadow: 0 2px 8px rgba(0,0,0,0.05);
             }}
-            h1 span.emoji {{
-                background: none;
+            p, h2, h3, h4, h5, h6, li, strong, em, code, span {{
+                color: #333333 !important; /* Ensure consistent text color */
             }}
             a {{
                 color: #0077b6;
@@ -101,6 +119,9 @@ def send_email(summaries, subscriber, start_date, end_date):
             a:hover {{
                 color: #00a3a3;
                 text-decoration: underline;
+            }}
+            ul, ol {{
+                color: #333333; /* Ensure lists inherit body color */
             }}
             .section {{
                 background-color: #e6f4ea;
@@ -113,9 +134,6 @@ def send_email(summaries, subscriber, start_date, end_date):
                 font-size: 24px;
                 margin-right: 8px;
                 vertical-align: middle;
-            }}
-            p {{
-                margin: 12px 0;
             }}
             .footer {{
                 text-align: center;
@@ -130,12 +148,13 @@ def send_email(summaries, subscriber, start_date, end_date):
                 padding: 3px 10px;
                 border-radius: 6px;
                 box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+                color: #333333; /* Explicit color for highlight */
             }}
         </style>
     </head>
     <body>
         <div style="text-align: center;">
-            <h1><span class="emoji">🔥</span> {email_title}</h1>
+            <h1>{email_title}</h1>
         </div>
         <div class="section">
             {html_content}
