@@ -1,13 +1,14 @@
-# twitter_scraper.py
 import os
 import time
 import pandas as pd
 from datetime import datetime
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException, StaleElementReferenceException
 from utils import log
-
+from urllib.parse import urlparse
+import requests
 
 class TwitterScraper:
     """
@@ -33,11 +34,9 @@ class TwitterScraper:
         retries = 0
         while retries < max_retries:
             try:
-                #log("Searching for first tweet...")
                 WebDriverWait(self.driver, timeout).until(
                     lambda d: d.find_elements(By.XPATH, "//article[@data-testid='tweet']")
                 )
-                #log("Tweet found!")
                 return self.driver.find_element(By.XPATH, "//article[@data-testid='tweet']")
             except (TimeoutException, NoSuchElementException, StaleElementReferenceException):
                 log(f"Retrying tweet search ({retries + 1}/{max_retries})...")
@@ -45,6 +44,23 @@ class TwitterScraper:
                 time.sleep(retry_delay)
         log("No tweet found after retries.")
         return None
+    
+    def _get_tweet_xpath(self):
+        """
+        Return the XPath for the first tweet element.
+        """
+        return "//article[@data-testid='tweet']"
+    
+    def _safe_clear_processed_tweet(self, tweet_element):
+        """
+        Safely clear a processed tweet, handling stale elements.
+        """
+        try:
+            WebDriverWait(self.driver, 5).until(EC.element_to_be_clickable(tweet_element))
+            self._clear_processed_tweet(tweet_element)
+        except (StaleElementReferenceException, TimeoutException):
+            log("Failed to clear tweet due to stale element or timeout. Skipping...")
+            pass
     
     def resume_from_last_processed(self, last_processed_tweet_url, url):
         """
@@ -54,7 +70,6 @@ class TwitterScraper:
         """
         log(f"Resuming from last processed tweet: {last_processed_tweet_url}")
         self.driver.get(url)
-        # Wait for tweets to load
         time.sleep(5)
         try:
             while True:
@@ -63,12 +78,10 @@ class TwitterScraper:
                     break
                 tweet_url = self.get_tweet_url(tweet_element)
                 if tweet_url == last_processed_tweet_url:
-                    # Delete the already-processed tweet and break out.
                     self._delete_first_tweet()
                     log("Found and deleted last processed tweet; resuming processing after this tweet.")
                     break
                 else:
-                    # Delete tweets that were already processed
                     self._delete_first_tweet()
         except Exception as e:
             log(f"Error resuming from last processed tweet: {str(e)}")
@@ -80,7 +93,6 @@ class TwitterScraper:
         end_date_obj = datetime.strptime(end_date, "%Y-%m-%d")
         tweets = []
         count = 0
-        refresh_needed = False
         
         while True:
             try:
@@ -89,12 +101,17 @@ class TwitterScraper:
                     self.driver_manager.restart_driver()
                     self.driver = self.driver_manager.driver
                 
-                tweet_element = self._get_first_tweet()
+                tweet_element = WebDriverWait(self.driver, 10).until(
+                    EC.presence_of_element_located((By.XPATH, self._get_tweet_xpath()))
+                )
                 if not tweet_element:
+                    log("No tweet element found. Continuing...")
                     continue
                 
                 tweet_data = self._process_tweet(tweet_element)
                 if not tweet_data:
+                    log("Failed to process tweet data. Continuing...")
+                    self._safe_clear_processed_tweet(tweet_element)
                     continue
                 
                 log(f"Processing tweet from {tweet_data['author_name']}, date: {tweet_data['date']}")
@@ -102,50 +119,55 @@ class TwitterScraper:
                 
                 if tweet_date < start_date_obj and not tweet_data['is_reposted']:
                     log("Tweet is older than start date. Checking next tweets...")
-                    
                     old_tweets = [tweet_data]
                     for _ in range(2):
-                        self._clear_processed_tweet(tweet_element)
-                        next_tweet_element = self._get_first_tweet()
-                        if not next_tweet_element:
-                            continue
+                        self._safe_clear_processed_tweet(tweet_element)
+                        try:
+                            next_tweet_element = WebDriverWait(self.driver, 10).until(
+                                EC.presence_of_element_located((By.XPATH, self._get_tweet_xpath()))
+                            )
+                        except TimeoutException:
+                            log("No next tweet found. Stopping.")
+                            break
+                        
                         next_tweet_data = self._process_tweet(next_tweet_element)
                         if not next_tweet_data:
+                            log("Failed to process next tweet. Continuing...")
                             continue
+                        
                         next_tweet_date = datetime.strptime(next_tweet_data["date"], "%Y-%m-%d")
+                        log(f"Next tweet date: {next_tweet_date}")
                         old_tweets.append(next_tweet_data)
                         
                         if next_tweet_date >= start_date_obj:
                             log("Found a valid tweet within the range. Continuing...")
                             tweets.extend(old_tweets)
                             break
+                        tweet_element = next_tweet_element
                     else:
                         log("No valid tweets found within range. Stopping.")
                         break
-                    
                     continue
                 elif tweet_date > end_date_obj:
                     log("Tweet is newer than end date. Deleting and continuing...")
-                    self._clear_processed_tweet(tweet_element)
+                    self._safe_clear_processed_tweet(tweet_element)
                     continue
                 
                 tweets.append(tweet_data)
-                self._clear_processed_tweet(tweet_element)
+                self._safe_clear_processed_tweet(tweet_element)
                 count += 1
-                
-                # if count % 50 == 0:
-                #     refresh_needed = True
-                #     log("Refreshing page after 50 tweets...")
-                #     self.driver.refresh()
-                #     time.sleep(5)
                 
                 if count % 100 == 0:
                     log("Triggering Chrome garbage collection...")
                     self.driver.execute_script("window.gc();")
             
+            except StaleElementReferenceException:
+                log("Stale element detected. Re-fetching tweet element...")
+                continue
             except Exception as e:
                 log(f"Error processing tweet: {str(e)}")
                 time.sleep(5)
+                continue
         
         return self._process_dataframe(tweets, time_threshold_minutes)
     
@@ -154,17 +176,13 @@ class TwitterScraper:
             self.driver.execute_script("arguments[0].remove();", tweet_element)
         except Exception as e:
             log(f"Error clearing tweet element: {str(e)}")
-
-
     
     def _delete_first_tweet(self):
         """
         Remove the first tweet from the page.
         """
         try:
-            #log("Deleting first tweet...")
             tweet_element = self.driver.find_element(By.XPATH, "//article[@data-testid='tweet'][1]")
-            #log(f"Tweet deleted: {tweet_element.text[:50]}...")
             self.driver.execute_script("arguments[0].remove();", tweet_element)
         except NoSuchElementException:
             log("No tweet to delete.")
@@ -204,7 +222,6 @@ class TwitterScraper:
         Process a single tweet element and extract relevant information.
         """
         try:
-            #log("Extracting tweet details...")
             author_details = self.get_element_text(tweet_element, ".//div[@data-testid='User-Name']")
             parts = author_details.split("\n")
             author_name, author_handle = parts[0], parts[1] if len(parts) > 1 else ""
@@ -271,19 +288,17 @@ class TwitterScraper:
     def get_images_urls(self, tweet_element):
         image_elements = tweet_element.find_elements(By.XPATH, ".//div[@data-testid='tweetPhoto']//img")
         return [img.get_attribute("src") for img in image_elements]
-
+    
     def download_images(self, df, output_dir='downloaded_images', timeout=10, chunk_size=8192, delay=1):
         """
         Download images from tweets and save them in a given folder
         """
-   
         os.makedirs(output_dir, exist_ok=True)
         
         for _, row in df.iterrows():
             if not row.get('image_urls'):
-                continue  # Skip rows without image URLs
+                continue
             
-            # Parse tweet details for naming files
             url_parts = urlparse(row['tweet_url'])
             twitter_name = url_parts.path.split('/')[1]
             tweet_id = url_parts.path.split('/')[-1]
@@ -292,13 +307,11 @@ class TwitterScraper:
                 image_id = f"{twitter_name}__{tweet_id}_{i}"
                 image_path = os.path.join(output_dir, f"{image_id}.jpg")
                 
-                # Skip download if the file already exists
                 if os.path.exists(image_path):
                     print(f"Image already exists: {image_id}")
                     continue
                 
                 try:
-                    # Download image
                     response = requests.get(image_url, stream=True, timeout=timeout)
                     response.raise_for_status()
                     
@@ -307,8 +320,6 @@ class TwitterScraper:
                             file.write(chunk)
                     
                     print(f"Successfully downloaded image: {image_id}")
-                    
-                    # Delay to prevent rate-limiting
                     time.sleep(delay)
                 
                 except requests.exceptions.RequestException as e:
